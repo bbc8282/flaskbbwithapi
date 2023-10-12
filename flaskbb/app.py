@@ -16,7 +16,9 @@ import time
 import warnings
 from datetime import datetime
 
-from flask import Flask, request
+from flask_restx import Api, Namespace, Resource, reqparse
+
+from flask import Flask, request, jsonify
 from flask_login import current_user
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
@@ -32,6 +34,7 @@ from flaskbb.plugins.models import PluginRegistry
 from flaskbb.plugins.utils import remove_zombie_plugins_from_db, template_hook
 # models
 from flaskbb.user.models import Guest, User
+from flaskbb.forum.models import Post, Topic
 # various helpers
 from flaskbb.utils.helpers import (app_config_from_env, crop_title,
                                    format_date, format_time, format_datetime,
@@ -53,6 +56,8 @@ from flaskbb.utils.search import (ForumWhoosheer, PostWhoosheer,
 from flaskbb.utils.settings import flaskbb_config
 from flaskbb.utils.translations import FlaskBBDomain
 
+from sqlalchemy.exc import IntegrityError
+
 from . import markup  # noqa
 from .auth import views as auth_views  # noqa
 from .deprecation import FlaskBBDeprecation
@@ -63,7 +68,128 @@ from .user import views as user_views  # noqa
 
 
 logger = logging.getLogger(__name__)
+api = Api(version='1.0', title='FlaskBB API',
+              description='A simple FlaskBB API')
+# API 네임스페이스 정의
+api_namespace = Namespace('api', description='FlaskBB API operations')
 
+parser = reqparse.RequestParser()
+parser.add_argument('password', type=str, required=True, help='Password cannot be blank')
+parser.add_argument('email', type=str, required=True, help='Email cannot be blank')
+parser.add_argument('group_id', type=int, required=True, help='Group ID cannot be blank')
+#parser.add_argument('email', type=str, required=True, help='Email cannot be blank')
+
+# 간단한 리소스 추가
+@api_namespace.route('/hello')
+class HelloWorld(Resource):
+    def get(self):
+        return {'hello': 'world'}
+
+@api_namespace.route('/users/<username>')
+class ShowUserInfo(Resource):
+    def get(self, username):
+        user = User.query.filter_by(username=username).first_or_404()
+        return {'username': user.username, 'email': user.email, 'group_id': user.primary_group_id}, 201
+
+@api_namespace.route('/users')
+class ListUsers(Resource):
+    def get(self):
+        users = User.query.all()
+        user_list = []
+        for user in users:
+            user_info = {
+                'username': user.username,
+                'email': user.email,
+                'group_id': user.primary_group_id
+            }
+            user_list.append(user_info)
+        return user_list, 201
+
+@api_namespace.route('/users/<username>')
+class CreateUser(Resource):
+    def post(self, username):
+        try:
+            existing_user = User.query.filter_by(username=username).first()
+            if existing_user:
+                return {'message': f'User {username} already exists.'}, 400
+
+            args = parser.parse_args()
+            new_user = User(username=username, password=args['password'], email=args['email'], primary_group_id=args['group_id'])
+
+            db.session.add(new_user)
+            db.session.commit()
+            
+            return {'message': f'User {username} has been created successfully.'}, 201
+        except IntegrityError:
+            db.session.rollback()
+            return {'message': 'User data already exists.'}, 400
+
+@api_namespace.route('/users/<username>')
+class DeleteUser(Resource):
+    def delete(self, username):
+        user = User.query.filter_by(username=username).first()
+        if not user:
+            return {'message': f'User {username} does not exist.'}, 400
+
+        db.session.delete(user)
+        db.session.commit()
+        
+        return {'message': f'User {username} has been deleted successfully.'}, 201
+
+@api_namespace.route('/delete_all_users')
+class DeleteAllUsersExceptUbuntu(Resource):
+    def delete(self):
+        users_to_delete = User.query.filter(User.username != "ubuntu").all()
+        
+        if not users_to_delete:
+            return {'message': 'No users to delete.'}, 400
+
+        for user in users_to_delete:
+            db.session.delete(user)
+        
+        db.session.commit()
+        return {'message': 'All users except ubuntu have been deleted successfully.'}, 200
+
+""" 
+@api_namespace.route('/forum/posts')
+class CreateForumPost(Resource):
+    def post(self):
+        parser = reqparse.RequestParser()
+        parser.add_argument('content', required=True, help="Content of the post is required.")
+        parser.add_argument('user_id', type=int, required=True, help="User ID is required.")
+        parser.add_argument('topic_id', type=int, required=True, help="Topic ID is required.")
+        args = parser.parse_args()
+
+        # Assuming you have a method to get a user and topic by their IDs
+        user = User.query.get(args['user_id'])
+        topic = Topic.query.get(args['topic_id'])
+
+        if not user or not topic:
+            return {'message': 'User or Topic not found.'}, 404
+
+        post = Post(content=args['content'], user=user, topic=topic)
+        post.save(user=user, topic=topic)
+
+        return {'message': f'Post has been created successfully.', 'post_id': post.id}, 201
+
+@api_namespace.route('/forum/posts/<int:post_id>')
+class DeleteForumPost(Resource):
+    def delete(self, post_id):
+        post = Post.query.get(post_id)
+        if not post:
+            return {'message': 'Post not found.'}, 404
+
+        post.delete()
+        return {'message': f'Post {post_id} has been deleted successfully.'}, 201
+
+@api_namespace.route('/forum/topics')
+class ListForumTopics(Resource):
+    def get(self):
+        topics = Topic.query.all()
+        topic_ids = [topic.id for topic in topics]
+        return jsonify(topic_ids) """
+
+api.add_namespace(api_namespace)
 
 def create_app(config=None, instance_path=None):
     """Creates the app.
@@ -102,6 +228,9 @@ def create_app(config=None, instance_path=None):
     configure_migrations(app)
     configure_translations(app)
     app.pluggy.hook.flaskbb_additional_setup(app=app, pluggy=app.pluggy)
+
+    # FlaskBB 앱에 api 객체를 초기화
+    api.init_app(app)
 
     return app
 
@@ -202,7 +331,6 @@ def configure_celery_app(app, celery):
 
 def configure_blueprints(app):
     app.pluggy.hook.flaskbb_load_blueprints(app=app)
-
 
 def configure_extensions(app):
     """Configures the extensions."""
