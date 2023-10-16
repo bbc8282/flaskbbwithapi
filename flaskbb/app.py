@@ -34,7 +34,7 @@ from flaskbb.plugins.models import PluginRegistry
 from flaskbb.plugins.utils import remove_zombie_plugins_from_db, template_hook
 # models
 from flaskbb.user.models import Guest, User
-from flaskbb.forum.models import Post, Topic
+from flaskbb.forum.models import Post, Topic, Forum
 # various helpers
 from flaskbb.utils.helpers import (app_config_from_env, crop_title,
                                    format_date, format_time, format_datetime,
@@ -150,44 +150,62 @@ class DeleteAllUsersExceptUbuntu(Resource):
         db.session.commit()
         return {'message': 'All users except ubuntu have been deleted successfully.'}, 200
 
-""" 
-@api_namespace.route('/forum/posts')
-class CreateForumPost(Resource):
+@api_namespace.route('/forums/topics')
+class CreateTopic(Resource):
     def post(self):
-        parser = reqparse.RequestParser()
-        parser.add_argument('content', required=True, help="Content of the post is required.")
-        parser.add_argument('user_id', type=int, required=True, help="User ID is required.")
-        parser.add_argument('topic_id', type=int, required=True, help="Topic ID is required.")
-        args = parser.parse_args()
-
-        # Assuming you have a method to get a user and topic by their IDs
+        topic_parser = reqparse.RequestParser()
+        topic_parser.add_argument('title', type=str, required=True, help='Title cannot be blank')
+        topic_parser.add_argument('content', type=str, required=True, help='Content cannot be blank')
+        topic_parser.add_argument('forum_id', type=int, required=True, help='Forum ID cannot be blank')
+        topic_parser.add_argument('user_id', type=int, required=True, help='User ID cannot be blank')
+                
+        args = topic_parser.parse_args()
+        
+        # Forum 객체를 검색
+        forum = Forum.query.get(args['forum_id'])
+        if not forum:
+            return {'message': 'Forum not found.'}, 404
+        
         user = User.query.get(args['user_id'])
-        topic = Topic.query.get(args['topic_id'])
+        if not user:
+            return {'message': 'User not found.'}, 404
 
-        if not user or not topic:
-            return {'message': 'User or Topic not found.'}, 404
+        # Topic 객체 생성 시 forum 객체 할당
+        new_topic = Topic(title=args['title'])
+        new_post = Post(content=args['content'], user=user, topic=new_topic)
+        
+        try:
+            new_topic.save(user=user, forum=forum, post=new_post)
+            return {'message': f'Topic {args["title"]} has been created successfully.'}, 201
+        except IntegrityError:
+            db.session.rollback()
+            return {'message': 'Error creating topic.'}, 400
 
-        post = Post(content=args['content'], user=user, topic=topic)
-        post.save(user=user, topic=topic)
+@api_namespace.route('/forums/topics/<int:topic_id>')
+class DeleteTopic(Resource):
+    def delete(self, topic_id):
+        topic = Topic.query.get(topic_id)
+        if not topic:
+            return {'message': 'Topic not found.'}, 404
 
-        return {'message': f'Post has been created successfully.', 'post_id': post.id}, 201
+        topic.delete()
+        return {'message': f'Topic {topic_id} has been deleted successfully.'}, 201
 
-@api_namespace.route('/forum/posts/<int:post_id>')
-class DeleteForumPost(Resource):
-    def delete(self, post_id):
-        post = Post.query.get(post_id)
-        if not post:
-            return {'message': 'Post not found.'}, 404
-
-        post.delete()
-        return {'message': f'Post {post_id} has been deleted successfully.'}, 201
-
-@api_namespace.route('/forum/topics')
-class ListForumTopics(Resource):
+@api_namespace.route('/forums/topics')
+class ListTopics(Resource):
     def get(self):
         topics = Topic.query.all()
         topic_ids = [topic.id for topic in topics]
-        return jsonify(topic_ids) """
+        titles = [topic.title for topic in topics]
+        return jsonify(topic_ids, titles)
+    
+@api_namespace.route('/forums')
+class ListForums(Resource):
+    def get(self):
+        forums = Forum.query.all()
+        forum_ids = [forum.id for forum in forums]
+        titles = [forum.title for forum in forums]
+        return jsonify(forum_ids, titles)
 
 api.add_namespace(api_namespace)
 
